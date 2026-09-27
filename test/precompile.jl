@@ -242,6 +242,13 @@ precompile_test_harness(false) do dir
                               missing, missing, missing,
                               missing, missing, 6]
 
+              # values holding stale bits above a primitive's width
+              primitive type P24 24 end
+              const p24 = let m = UInt8[0x01, 0x00, 0x00, 0xff]
+                  GC.@preserve m Base.invokelatest(Core.Intrinsics.pointerref, Ptr{P24}(pointer(m)), 1, 1)
+              end
+              const t24 = Base.invokelatest(tuple, p24, 0x02)
+
               let some_method = which(Base.include, (Module, String,))
                     # global const some_method // FIXME: support for serializing a direct reference to an external Method not implemented
                   global const some_linfo = Core.Compiler.specialize_method(some_method,
@@ -358,6 +365,12 @@ precompile_test_harness(false) do dir
         @test Foo.dict54932[fresh] === :found
 
         @test Foo.x28998[end] == 6
+
+        # the image holds no bits above a primitive's width
+        rawbytes(@nospecialize x) = GC.@preserve x [unsafe_load(Ptr{UInt8}(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), x)), i)
+                                                    for i in 1:sizeof(x)]
+        @test rawbytes(Foo.p24) == [0x01, 0x00, 0x00, 0x00]
+        @test rawbytes(Foo.t24)[1:5] == [0x01, 0x00, 0x00, 0x00, 0x02]
 
         @test Foo.a31488 == fill("", 100)
 

@@ -341,6 +341,17 @@ end
     const129() = Ref{Any}(Core.Intrinsics.zext_int(TestUInt129, Base.compilerbarrier(:const, 0x01)))[]
     @test rawbytes(const129()) == [0x01; zeros(UInt8, sizeof(TestUInt129) - 1)]
 
+    # compressed IR holds a primitive literal without the bits above its width
+    retnothing() = nothing
+    let m = only(methods(retnothing)), ci = code_lowered(retnothing)[1]
+        function compressed(@nospecialize x)
+            ci.code[end] = Core.ReturnNode(x)
+            return ccall(:jl_compress_ir, Any, (Any, Any), m, ci)
+        end
+        @test compressed(dirty(TestUInt24, 0x01, 0x00, 0x00, 0xff)) ==
+              compressed(Core.Intrinsics.trunc_int(TestUInt24, 0x00000001))
+    end
+
     x63 = Core.Intrinsics.trunc_int(TestUInt63, UInt64(0xffff_ffff_ffff_ffff))
     @test Core.Intrinsics.zext_int(UInt64, x63) === 0x7fff_ffff_ffff_ffff
 

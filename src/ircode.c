@@ -540,7 +540,9 @@ static void jl_encode_value_(jl_ircode_state *s, jl_value_t *v, int as_literal)
                 break;
         }
         char *ptr = data + jl_datatype_size(t);
-        if (ptr > last)
+        if (jl_is_primitivetype(t) && t->layout->flags.haspadding)
+            write_primitive_bits(s->s, data, t);
+        else if (ptr > last)
             ios_write(s->s, last, ptr - last);
     }
     else {

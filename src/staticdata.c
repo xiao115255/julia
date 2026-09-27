@@ -1711,7 +1711,10 @@ static void jl_write_values(jl_serializer_state *s) JL_CANSAFEPOINT JL_GC_DISABL
         else if (jl_datatype_nfields(t) == 0) {
             // The object has no fields, so we just snapshot its byte representation
             assert(t->layout->npointers == 0);
-            ios_write(f, (char*)v, jl_datatype_size(t));
+            if (jl_is_primitivetype(t) && t->layout->flags.haspadding)
+                write_primitive_bits(f, (char*)v, t);
+            else
+                ios_write(f, (char*)v, jl_datatype_size(t));
         }
         else if (jl_bigint_type && jl_typetagis(v, jl_bigint_type)) {
             // foreign types require special handling
@@ -1765,7 +1768,11 @@ static void jl_write_values(jl_serializer_state *s) JL_CANSAFEPOINT JL_GC_DISABL
                     write_pointer(f);
                 }
                 else if (fsz > 0) {
-                    ios_write(f, slot, fsz);
+                    jl_value_t *ft = jl_field_type_concrete(t, i);
+                    if (jl_is_primitivetype(ft) && ((jl_datatype_t*)ft)->layout->flags.haspadding)
+                        write_primitive_bits(f, slot, (jl_datatype_t*)ft);
+                    else
+                        ios_write(f, slot, fsz);
                 }
                 tot += fsz;
             }

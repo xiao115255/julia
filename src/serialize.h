@@ -74,6 +74,19 @@ static inline uint32_t read_uint32(ios_t *s) JL_NOTSAFEPOINT
 #define read_uint(s) read_uint32(s)
 #endif
 
+// Write a primitive value with the bits above its width zeroed, so the output
+// does not depend on whatever padding the value was stored with.
+static inline void write_primitive_bits(ios_t *s, const char *data, jl_datatype_t *dt) JL_NOTSAFEPOINT
+{
+    size_t nbits = jl_datatype_nbits(dt);
+    size_t nb = (nbits + 7) / 8;
+    ios_write(s, data, nbits / 8);
+    if (nbits % 8)
+        write_uint8(s, (uint8_t)data[nb - 1] & ((1 << (nbits % 8)) - 1));
+    for (size_t i = nb; i < jl_datatype_size(dt); i++)
+        write_uint8(s, 0);
+}
+
 #ifdef __cplusplus
 }
 #endif
