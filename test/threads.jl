@@ -947,3 +947,119 @@ let code = """
     # JULIA_COPY_STACKS is broken on Windows (#35147)
     @test read(cmd, String) == "75025" skip=Sys.iswindows()
 end
+
+# A searcher that throws must wake a thread for a task queued while it
+# searched.
+let code = """
+    using Base.Threads
+    ran = Atomic{Int}(0)
+    victim = Task(() -> (ran[] = 1))
+    victim.sticky = false
+    # the default pool (2 threads)
+    ccall(:jl_set_task_threadpoolid, Cint, (Any, Int8), victim, 1)
+    done = Channel{Bool}(1)
+    calls = Ref(0)
+    trypop = q -> begin
+        calls[] += 1
+        calls[] == 1 && return nothing   # not a Task: keep polling (take a spinner slot)
+        schedule(victim)                 # wakeup is gated on our own spinner slot
+        error("boom")
+    end
+    checkempty = () -> true
+    a = Task(() -> begin
+        try
+            ccall(:jl_task_get_next, Ref{Task}, (Any, Any, Any), trypop, [], checkempty)
+        catch
+        end
+        Libc.systemsleep(0.5)            # block this thread without yielding
+        put!(done, ran[] == 1)
+    end)
+    a.sticky = true
+    ccall(:jl_set_task_tid, Cint, (Any, Cint), a, 1)  # first default-pool thread
+    schedule(a)
+    exit(take!(done) ? 0 : 1)
+    """
+    cmd = `$(Base.julia_cmd()) --depwarn=error --startup-file=no -t2,1 -e $code`
+    @test success(cmd)
+end
+
+# checkempty throws after the thread marked itself sleeping: the handler must
+# undo that and wake a thread for the queued task.
+let code = """
+    using Base.Threads
+    ran = Atomic{Int}(0)
+    victim = Task(() -> (ran[] = 1))
+    victim.sticky = false
+    # the default pool (2 threads)
+    ccall(:jl_set_task_threadpoolid, Cint, (Any, Int8), victim, 1)
+    done = Channel{Bool}(1)
+    calls = Ref(0)
+    # Throw in the recheck: the only check_empty right after another one,
+    # since the loop calls trypop before each of its own.
+    after_check = Ref(false)
+    trypop = q -> (after_check[] = false; nothing)   # never a task: keep polling
+    checkempty = () -> begin
+        calls[] += 1
+        if after_check[]                 # second in a row: we are past publish
+            schedule(victim)
+            error("boom")
+        end
+        after_check[] = true
+        return true
+    end
+    a = Task(() -> begin
+        try
+            ccall(:jl_task_get_next, Ref{Task}, (Any, Any, Any), trypop, [], checkempty)
+        catch
+        end
+        Libc.systemsleep(0.5)            # block this thread without yielding
+        put!(done, ran[] == 1)
+    end)
+    a.sticky = true
+    ccall(:jl_set_task_tid, Cint, (Any, Cint), a, 1)  # first default-pool thread
+    schedule(a)
+    exit(take!(done) ? 0 : 1)
+    """
+    cmd = addenv(`$(Base.julia_cmd()) --depwarn=error --startup-file=no -t2,1 -e $code`,
+                 "JULIA_THREAD_SLEEP_THRESHOLD" => "1")
+    @test success(cmd)
+end
+
+# A searcher queues a task (no wake, since it searches), then throws in the
+# recheck before sleeping: the sleep code's handler must wake a thread.
+let code = """
+    using Base.Threads
+    ran = Atomic{Int}(0)
+    victim = Task(() -> (ran[] = 1))
+    victim.sticky = false
+    ccall(:jl_set_task_threadpoolid, Cint, (Any, Int8), victim, 1)
+    done = Channel{Bool}(1)
+    scheduled = Ref(false)
+    after_check = Ref(false)   # detects the recheck, as in the previous test
+    trypop = q -> (after_check[] = false; nothing)   # never a task: keep polling
+    checkempty = () -> begin
+        after_check[] && error("boom")   # second in a row: we are past publish
+        if !scheduled[]                  # a quick poll, holding a searcher slot
+            scheduled[] = true
+            schedule(victim)
+        end
+        after_check[] = true
+        return true
+    end
+    a = Task(() -> begin
+        try
+            ccall(:jl_task_get_next, Ref{Task}, (Any, Any, Any), trypop, [], checkempty)
+        catch
+        end
+        Libc.systemsleep(0.5)            # block this thread without yielding
+        put!(done, ran[] == 1)
+    end)
+    a.sticky = true
+    ccall(:jl_set_task_tid, Cint, (Any, Cint), a, 1)  # first default-pool thread
+    schedule(a)
+    exit(take!(done) ? 0 : 1)
+    """
+    cmd = addenv(`$(Base.julia_cmd()) --depwarn=error --startup-file=no -t2,1 -e $code`,
+                 "JULIA_THREAD_SLEEP_THRESHOLD" => "1")
+    @test success(cmd)
+end
